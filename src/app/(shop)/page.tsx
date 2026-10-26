@@ -27,7 +27,7 @@ export default async function ShopPage({ searchParams }: ShopPageProps) {
       </div>
 
       <div className="flex items-baseline justify-between px-4.5 pb-3 pt-5.5">
-        <span className="font-[Baloo_2] text-[18px] font-bold">{listTitle}</span>
+        <span className="font-(family-name:--font-baloo) text-[18px] font-bold">{listTitle}</span>
         <span className="text-[12px] text-stone-500">{countLabel}</span>
       </div>
 

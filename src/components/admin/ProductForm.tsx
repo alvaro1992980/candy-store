@@ -1,63 +1,64 @@
 "use client";
 
-import { useState } from "react";
+import { startTransition, useActionState, useEffect, useState } from "react";
 import { CATEGORIES } from "@/lib/categories";
 import type { Product } from "@/lib/db/schema";
+import type { ProductFormState } from "@/lib/actions/products";
 
 interface ProductFormProps {
   product?: Product;
-  action: (formData: FormData) => void | Promise<void>;
+  action: (state: ProductFormState, formData: FormData) => Promise<ProductFormState>;
 }
 
 export function ProductForm({ product, action }: ProductFormProps) {
-  const [imageUrl, setImageUrl] = useState(product?.imageUrl ?? "");
-  const [uploading, setUploading] = useState(false);
+  const [state, formAction, pending] = useActionState(action, undefined);
   const [previewUrl, setPreviewUrl] = useState<string | null>(product?.imageUrl ?? null);
 
-  async function onPhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  useEffect(() => {
+    return () => {
+      if (previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
 
-    setPreviewUrl((prev) => {
-      if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
-      return URL.createObjectURL(file);
-    });
-    setUploading(true);
-    try {
-      const formData = new FormData();
-      formData.set("file", file);
-      const res = await fetch("/api/upload", { method: "POST", body: formData });
-      if (!res.ok) throw new Error(await res.text());
-      const { url } = (await res.json()) as { url: string };
-      setImageUrl(url);
-    } catch {
-      alert("No se pudo subir la foto. Intentá de nuevo.");
-    } finally {
-      setUploading(false);
-    }
+  function onPhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    setPreviewUrl(file ? URL.createObjectURL(file) : (product?.imageUrl ?? null));
+  }
+
+  // Submitting manually (instead of <form action>) stops React from resetting
+  // the form after the action returns, so a validation error doesn't wipe
+  // the chosen photo and the fields the admin already filled in.
+  function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    startTransition(() => formAction(formData));
   }
 
   return (
-    <form action={action} className="flex flex-col gap-3">
-      <input type="hidden" name="imageUrl" value={imageUrl} />
-
+    <form onSubmit={onSubmit} className="flex flex-col gap-3">
       <label className="flex flex-col gap-1.5">
         <span className="text-[12.5px] font-bold text-stone-700">Foto</span>
         <div className="flex items-center gap-3">
           <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-xl bg-stone-100">
             {previewUrl ? (
               // Plain <img>, not next/image: this can be a local blob: object URL
-              // (before upload finishes) or an arbitrary bucket host, and it's
-              // a tiny fixed-size thumbnail where optimization buys nothing.
+              // (a photo picked but not yet saved) or an arbitrary bucket host, and
+              // it's a tiny fixed-size thumbnail where optimization buys nothing.
               // eslint-disable-next-line @next/next/no-img-element
               <img src={previewUrl} alt="" className="h-full w-full object-contain" />
             ) : (
               <span className="text-[9px] text-stone-400">sin foto</span>
             )}
           </div>
-          <input type="file" accept="image/*" onChange={onPhotoChange} className="text-[12.5px]" />
+          <input
+            type="file"
+            name="photo"
+            // Keep in sync with ALLOWED_TYPES in lib/storage.ts.
+            accept="image/jpeg,image/png,image/webp,image/gif"
+            onChange={onPhotoChange}
+            className="text-[12.5px]"
+          />
         </div>
-        {uploading && <span className="text-[12px] text-stone-500">Subiendo…</span>}
       </label>
 
       <label className="flex flex-col gap-1.5">
@@ -103,12 +104,14 @@ export function ProductForm({ product, action }: ProductFormProps) {
         <span className="text-[13px] text-stone-700">Ocultar del catálogo</span>
       </label>
 
+      {state?.error && <span className="text-[13px] font-bold text-rose-600">{state.error}</span>}
+
       <button
         type="submit"
-        disabled={uploading}
+        disabled={pending}
         className="mt-1 rounded-2xl bg-stone-900 py-3 text-[14px] font-bold text-white disabled:opacity-50"
       >
-        Guardar
+        {pending ? "Guardando…" : "Guardar"}
       </button>
     </form>
   );
