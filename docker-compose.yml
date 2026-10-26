@@ -1,0 +1,75 @@
+# Local dev services: Postgres + MinIO (standing in for the Railway Storage Bucket).
+#   npm run setup            start everything, then migrate + seed the database
+#   docker compose up -d     start everything (also creates the bucket)
+#   docker compose down      stop; data is kept in named volumes
+#
+# The credentials below are throwaway, local-only dev values. .env.local must
+# use the same ones (see .env.example). They're hardcoded rather than read
+# from .env.local because compose would try to expand the `$` signs in
+# ADMIN_PASSWORD_HASH (and print fragments of it in warnings).
+name: dulceria
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: dulceria
+      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: dulceria
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dulceria -d dulceria"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # MinIO pulled its images from Docker Hub/quay.io; Chainguard publishes a
+  # free rebuild of the same server. It's distroless (no shell/curl/mc), so
+  # there's no healthcheck here — minio-init waits for it instead.
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    command: ["server", "/data", "--console-address", ":9011"]
+    # The image runs as a non-root user, which can't write to a freshly
+    # created named volume. Fine for a local dev container.
+    user: "0:0"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    ports:
+      - "9010:9000" # S3 API (STORAGE_ENDPOINT)
+      - "9011:9011" # web console
+    volumes:
+      - minio-data:/data
+
+  # One-shot: creates the bucket and makes it publicly readable, since the
+  # shop serves product photos straight from STORAGE_PUBLIC_URL. Uses plain
+  # S3 API calls, so it works against any S3-compatible server. Idempotent.
+  minio-init:
+    image: amazon/aws-cli:latest
+    depends_on:
+      - minio
+    environment:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin123
+      AWS_DEFAULT_REGION: us-east-1
+      BUCKET: dulceria-products
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        s3() { aws --endpoint-url http://minio:9000 s3api "$$@"; }
+        tries=0
+        until s3 list-buckets > /dev/null 2>&1; do
+          tries=$$((tries + 1))
+          if [ "$$tries" -ge 60 ]; then echo "MinIO did not come up" >&2; exit 1; fi
+          sleep 1
+        done
+        s3 head-bucket --bucket "$$BUCKET" 2> /dev/null || s3 create-bucket --bucket "$$BUCKET"
+        s3 put-bucket-policy --bucket "$$BUCKET" --policy "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":[\"s3:GetObject\"],\"Resource\":[\"arn:aws:s3:::$$BUCKET/*\"]}]}"
+        echo "Bucket $$BUCKET ready"
+
+volumes:
+  postgres-data:
+  minio-data:
